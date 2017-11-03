@@ -1,3 +1,6 @@
+#!/usr/bin/env python
+# -*- coding: utf-8 -*-
+
 from __future__ import print_function
 import tensorflow as tf
 
@@ -6,7 +9,7 @@ import time
 import os
 from six.moves import cPickle
 
-from utils import TextLoader
+from loaders import TextPredictionTaskLoader
 from model import Model
 
 
@@ -56,8 +59,8 @@ def main():
 
 
 def train(args):
-    data_loader = TextLoader(args.data_dir, args.batch_size, args.seq_length)
-    args.vocab_size = data_loader.vocab_size
+    data_loader = TextPredictionTaskLoader(args.data_dir, args.batch_size, args.seq_length)
+    args.vocab_size = data_loader.vocab_size()
 
     # check compatibility if training is continued from previously saved model
     if args.init_from is not None:
