@@ -41,7 +41,6 @@ class TextLoaderBase():
         with np.load(data_file) as data:
             for name in data.files:
                 setattr(self, name, data[name])
-        self.num_batches = int(self.tensor.size / (self.batch_size * self.seq_length))
 
     def save_preprocessed(self, vocab_file, data_file):
         self.save_vocab(vocab_file)
