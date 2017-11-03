@@ -14,26 +14,9 @@ class Model():
             args.batch_size = 1
             args.seq_length = 1
 
-        if args.model == 'rnn':
-            cell_fn = rnn.BasicRNNCell
-        elif args.model == 'gru':
-            cell_fn = rnn.GRUCell
-        elif args.model == 'lstm':
-            cell_fn = rnn.BasicLSTMCell
-        elif args.model == 'nas':
-            cell_fn = rnn.NASCell
-        else:
-            raise Exception("model type not supported: {}".format(args.model))
-
-        cells = []
-        for _ in range(args.num_layers):
-            cell = cell_fn(args.rnn_size)
-            if training and (args.output_keep_prob < 1.0 or args.input_keep_prob < 1.0):
-                cell = rnn.DropoutWrapper(cell,
-                                          input_keep_prob=args.input_keep_prob,
-                                          output_keep_prob=args.output_keep_prob)
-            cells.append(cell)
-
+        use_dropout = training and (args.output_keep_prob < 1.0 or args.input_keep_prob < 1.0)
+        cell_fn = self.select_cell_fn(args.model)
+        cells = self.create_cell_stack(cell_fn, args, use_dropout=use_dropout)
         self.cell = cell = rnn.MultiRNNCell(cells, state_is_tuple=True)
 
         self.input_data = tf.placeholder(
@@ -42,12 +25,10 @@ class Model():
             tf.int32, [args.batch_size, args.seq_length])
         self.initial_state = cell.zero_state(args.batch_size, tf.float32)
 
-        with tf.variable_scope('rnnlm'):
-            softmax_w = tf.get_variable("softmax_w",
-                                        [args.rnn_size, args.vocab_size])
-            softmax_b = tf.get_variable("softmax_b", [args.vocab_size])
+        softmax_w = self.create_var('rnnlm', 'softmax_w', [args.rnn_size, args.vocab_size])
+        softmax_b = self.create_var('rnnlm', 'softmax_b', [args.vocab_size])
 
-        embedding = tf.get_variable("embedding", [args.vocab_size, args.rnn_size])
+        embedding = self.create_var('rnnlm', 'embedding', [args.vocab_size, args.rnn_size])
         inputs = tf.nn.embedding_lookup(embedding, self.input_data)
 
         # dropout beta testing: double check which one should affect next line
@@ -124,3 +105,33 @@ class Model():
             ret += pred
             char = pred
         return ret
+
+    def create_var(self, scope, name, *args):
+        with tf.variable_scope(scope, reuse=False):
+            return tf.get_variable(name, *args)
+
+    def select_cell_fn(self, name):
+        cellfns = { 'rnn': rnn.BasicRNNCell,
+                    'gru': rnn.GRUCell,
+                    'lstm': rnn.BasicLSTMCell,
+                    'nas': rnn.NASCell }
+        try:
+            return cellfns[name]
+        except KeyError:
+            raise Exception("model type not supported: {}".format(name))
+
+    def create_var(self, scope, name, *args):
+        with tf.variable_scope(scope, reuse=False):
+            return tf.get_variable(name, *args)
+
+
+    def create_cell_stack(self, cell_fn, args, use_dropout=False):
+        cells = []
+        for _ in range(args.num_layers):
+            cell = cell_fn(args.rnn_size)
+            if use_dropout:
+                cell = rnn.DropoutWrapper(
+                    cell, input_keep_prob=args.input_keep_prob,
+                    output_keep_prob=args.output_keep_prob)
+            cells.append(cell)
+        return cells
