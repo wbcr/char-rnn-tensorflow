@@ -10,7 +10,7 @@ import os
 from six.moves import cPickle
 
 from loaders import TextPredictionTaskLoader
-from model import Model
+from model import ModelForwardRNN
 
 
 def main():
@@ -92,7 +92,7 @@ def train(args):
     with open(os.path.join(args.save_dir, 'chars_vocab.pkl'), 'wb') as f:
         cPickle.dump((data_loader.chars, data_loader.vocab), f)
 
-    model = Model(args)
+    model = ModelForwardRNN(args)
 
     with tf.Session() as sess:
         # instrument for tensorboard

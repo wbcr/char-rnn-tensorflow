@@ -2,12 +2,47 @@
 
 import tensorflow as tf
 from tensorflow.contrib import rnn
+from tensorflow.contrib import seq2seq
 from tensorflow.contrib import legacy_seq2seq
 
 import numpy as np
 
+class ModelBase():
+    """Model creation base class."""
 
-class Model():
+    def create_var(self, scope, name, *args):
+        with tf.variable_scope(scope, reuse=False):
+            return tf.get_variable(name, *args)
+
+    def select_cell_fn(self, name):
+        cellfns = { 'rnn': rnn.BasicRNNCell,
+                    'gru': rnn.GRUCell,
+                    'lstm': rnn.BasicLSTMCell,
+                    'nas': rnn.NASCell }
+        try:
+            return cellfns[name]
+        except KeyError:
+            raise Exception("model type not supported: {}".format(name))
+
+    def create_var(self, scope, name, *args):
+        with tf.variable_scope(scope, reuse=False):
+            return tf.get_variable(name, *args)
+
+
+    def create_cell_stack(self, scope, cell_fn, args, use_dropout=False):
+        cells = []
+        for layer in range(args.num_layers):
+            with tf.variable_scope('%s_%x' % (scope, layer)):
+                cell = cell_fn(args.rnn_size)
+                if use_dropout:
+                    cell = rnn.DropoutWrapper(
+                        cell, input_keep_prob=args.input_keep_prob,
+                        output_keep_prob=args.output_keep_prob)
+                cells.append(cell)
+        return cells
+
+
+class ModelForwardRNN(ModelBase):
     def __init__(self, args, training=True):
         self.args = args
         if not training:
@@ -16,7 +51,7 @@ class Model():
 
         use_dropout = training and (args.output_keep_prob < 1.0 or args.input_keep_prob < 1.0)
         cell_fn = self.select_cell_fn(args.model)
-        cells = self.create_cell_stack(cell_fn, args, use_dropout=use_dropout)
+        cells = self.create_cell_stack('hidden', cell_fn, args, use_dropout=use_dropout)
         self.cell = cell = rnn.MultiRNNCell(cells, state_is_tuple=True)
 
         self.input_data = tf.placeholder(
@@ -106,32 +141,66 @@ class Model():
             char = pred
         return ret
 
-    def create_var(self, scope, name, *args):
-        with tf.variable_scope(scope, reuse=False):
-            return tf.get_variable(name, *args)
 
-    def select_cell_fn(self, name):
-        cellfns = { 'rnn': rnn.BasicRNNCell,
-                    'gru': rnn.GRUCell,
-                    'lstm': rnn.BasicLSTMCell,
-                    'nas': rnn.NASCell }
-        try:
-            return cellfns[name]
-        except KeyError:
-            raise Exception("model type not supported: {}".format(name))
+def ModelBidirectionalRNN(ModelBase):
 
-    def create_var(self, scope, name, *args):
-        with tf.variable_scope(scope, reuse=False):
-            return tf.get_variable(name, *args)
+      def __init__(self, args, training=True):
 
+        self.args = args
+        if not training:
+            args.batch_size = 1
 
-    def create_cell_stack(self, cell_fn, args, use_dropout=False):
-        cells = []
-        for _ in range(args.num_layers):
-            cell = cell_fn(args.rnn_size)
-            if use_dropout:
-                cell = rnn.DropoutWrapper(
-                    cell, input_keep_prob=args.input_keep_prob,
-                    output_keep_prob=args.output_keep_prob)
-            cells.append(cell)
-        return cells
+        use_dropout = training and (args.output_keep_prob < 1.0 or args.input_keep_prob < 1.0)
+
+        self.input_data = tf.placeholder(tf.int32, [args.batch_size, args.seq_length])
+        self.targets = tf.placeholder(tf.int32, [args.batch_size, args.seq_length])
+
+        embedding = self.create_var('input', 'embedding', [args.vocab_size, args.rnn_size])
+        inputs = tf.nn.embedding_lookup(embedding, self.input_data)
+        if use_dropout:
+            inputs = tf.nn.dropout(inputs, args.output_keep_prob)
+
+        cell_fn = self.select_cell_fn(args.model)
+        cells_fw = self.create_cell_stack('hidden_fw', cell_fn, args, use_dropout=use_dropout)
+        cells_bw = self.create_cell_stack('hidden_bw', cell_fn, args, use_dropout=use_dropout)
+
+        self.cell_fw = rnn.MultiRNNCell(cells_fw, state_is_tuple=True)
+        self.cell_bw = rnn.MultiRNNCell(cells_bw, state_is_tuple=True)
+
+        self.initial_state = (self.cell_fw.zero_state(args.batch_size, tf.float32),
+                              self.cell_bw.zero_state(args.batch_size, tf.float32))
+
+        sequence_length = [args.seq_length]*args.batch_size
+        outputs, self.final_state = tf.nn.bidirectional_dynamic_rnn(self.cell_fw, self.cell_bw, inputs, sequence_length,
+            initial_state_fw=self.initial_state[0], initial_state_bw=self.initial_state[1])
+
+        # bidi dynamic rnn does not concatenate fw and bw cells by default
+        output = tf.concat(outputs, 2, name="concat_outputs")
+
+        softmax_w = self.create_var('rnlm', 'softmax_w', [2*args.rnn_size, args.vocab_size])
+        softmax_b = self.create_var('rnlm', 'softmax_b', [args.vocab_size])
+
+        # Reshape/matmul/reshape sequence
+        self.logits = tf.einsum("ijk,kl->ijl", output, softmax_w) + softmax_b
+        self.probs = tf.nn.softmax(self.logits)
+
+        loss = seq2seq.sequence_loss(self.logits, self.targets, tf.ones([args.batch_size, args.seq_length]), average_across_batch=False)
+
+        with tf.name_scope('cost'):
+            self.cost = tf.reduce_sum(loss) / args.batch_size / args.seq_length
+
+        self.lr = tf.Variable(0.0, trainable=False)
+
+        # apply clipping
+        tvars = tf.trainable_variables()
+        grads, _ = tf.clip_by_global_norm(tf.gradients(self.cost, tvars),
+                args.grad_clip)
+
+        with tf.name_scope('optimizer'):
+            optimizer = tf.train.AdamOptimizer(self.lr)
+        self.train_op = optimizer.apply_gradients(zip(grads, tvars))
+
+        # instrument tensorboard
+        tf.summary.histogram('logits', self.logits)
+        tf.summary.histogram('loss', loss)
+        tf.summary.scalar('train_loss', self.cost)
