@@ -9,8 +9,8 @@ import time
 import os
 from six.moves import cPickle
 
-from loaders import TextPredictionTaskLoader
-from model import ModelForwardRNN
+from loaders import TextPredictionTaskLoader, TextCorrectionTaskLoader
+from model import ModelForwardRNN, ModelBidirectionalRNN
 
 
 def main():
@@ -59,7 +59,7 @@ def main():
 
 
 def train(args):
-    data_loader = TextPredictionTaskLoader(args.data_dir, args.batch_size, args.seq_length)
+    data_loader = TextCorrectionTaskLoader(args.data_dir, args.batch_size, args.seq_length)
     args.vocab_size = data_loader.vocab_size()
 
     # check compatibility if training is continued from previously saved model
@@ -92,7 +92,7 @@ def train(args):
     with open(os.path.join(args.save_dir, 'chars_vocab.pkl'), 'wb') as f:
         cPickle.dump((data_loader.chars, data_loader.vocab), f)
 
-    model = ModelForwardRNN(args)
+    model = ModelBidirectionalRNN(args)
 
     with tf.Session() as sess:
         # instrument for tensorboard
@@ -102,7 +102,7 @@ def train(args):
         writer.add_graph(sess.graph)
 
         sess.run(tf.global_variables_initializer())
-        saver = tf.train.Saver(tf.global_variables())
+        saver = tf.train.Saver(tf.global_variables(), max_to_keep=None)
         # restore model
         if args.init_from is not None:
             saver.restore(sess, ckpt.model_checkpoint_path)
@@ -115,9 +115,7 @@ def train(args):
                 start = time.time()
                 x, y = data_loader.next_batch()
                 feed = {model.input_data: x, model.targets: y}
-                for i, (c, h) in enumerate(model.initial_state):
-                    feed[c] = state[i].c
-                    feed[h] = state[i].h
+                feed.update(model.feed_state(model.initial_state, state))
 
                 # instrument for tensorboard
                 summ, train_loss, state, _ = sess.run([summaries, model.cost, model.final_state, model.train_op], feed)

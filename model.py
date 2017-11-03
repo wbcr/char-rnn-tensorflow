@@ -142,9 +142,14 @@ class ModelForwardRNN(ModelBase):
         return ret
 
 
-def ModelBidirectionalRNN(ModelBase):
+    def feed_state(self, state_struct, state_value, feed):
+        for i, (c, h) in enumerate(state_struct):
+            feed[c] = state_value[i].c
+            feed[h] = state_value[i].h
 
-      def __init__(self, args, training=True):
+class ModelBidirectionalRNN(ModelBase):
+
+    def __init__(self, args, training=True):
 
         self.args = args
         if not training:
@@ -204,3 +209,12 @@ def ModelBidirectionalRNN(ModelBase):
         tf.summary.histogram('logits', self.logits)
         tf.summary.histogram('loss', loss)
         tf.summary.scalar('train_loss', self.cost)
+
+
+    def feed_state(self, state_struct, state_value):
+        feed = {}
+        for struct, value in zip(state_struct, state_value):
+            for i, (c, h) in enumerate(struct):
+                feed[c] = value[i].c
+                feed[h] = value[i].h
+        return feed
